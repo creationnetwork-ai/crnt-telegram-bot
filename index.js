@@ -11,6 +11,12 @@ const ICO_ADDRESS = process.env.ICO_ADDRESS
   ? process.env.ICO_ADDRESS.toLowerCase()
   : null;
 
+// ✅ Satış Sayfası Linki
+const ICO_SALE_PAGE = "https://crnttoken.net/";
+// ✅ Video Linki (Google Drive veya başka bir sunucudan sağlanmalı)
+const VIDEO_URL =
+  "https://drive.google.com/uc?export=download&id=1UXdSRcGiiqEfQfCYHqNv5_gaH4oCEZ0G";
+
 if (
   !TELEGRAM_BOT_TOKEN ||
   !TELEGRAM_CHAT_ID ||
@@ -128,20 +134,37 @@ async function getTokenPrice() {
   }
 }
 
-// ✅ **Telegram'a mesaj gönder**
+// ✅ **Telegram'a mesaj ve video gönder**
 async function sendToTelegram(message) {
-  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+  const sendMessageUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+  const sendVideoUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo`;
 
   try {
-    await axios.post(url, {
+    // 📹 **Önce videoyu gönder**
+    await axios.post(sendVideoUrl, {
       chat_id: TELEGRAM_CHAT_ID,
-      text: message,
+      video: VIDEO_URL,
+      caption: message,
       parse_mode: "Markdown",
     });
 
-    console.log("✅ Telegram'a mesaj gönderildi!");
+    console.log("✅ Video ve mesaj Telegram'a gönderildi!");
+
+    // 📌 **Son olarak butonu olan mesajı gönder**
+    await axios.post(sendMessageUrl, {
+      chat_id: TELEGRAM_CHAT_ID,
+      text: "🚀 Buy Creationnetwork ($CRNT)",
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔹 Buy CRNT Token 🔹", url: ICO_SALE_PAGE }],
+        ],
+      },
+      parse_mode: "Markdown",
+    });
+
+    console.log("✅ Satış butonu gönderildi!");
   } catch (err) {
-    console.error("❌ Telegram mesajı gönderilemedi:", err.message);
+    console.error("❌ Telegram mesajı/video gönderilemedi:", err.message);
   }
 }
 
