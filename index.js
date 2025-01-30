@@ -1,8 +1,9 @@
 require("dotenv").config();
 const { ethers } = require("ethers");
 const axios = require("axios");
+const fs = require("fs");
 
-// ✅ Environment Variables
+// ✅ Çevresel değişkenler
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const INFURA_API_URL = process.env.INFURA_API_URL;
@@ -17,79 +18,102 @@ if (
   !ICO_ADDRESS
 ) {
   console.error(
-    "❌ Missing required environment variables. Check your .env file."
+    "❌ Gerekli çevresel değişkenler eksik. .env dosyanızı kontrol edin."
   );
   process.exit(1);
 }
 
-// ✅ Binance Smart Chain Provider
+// ✅ BSC Sağlayıcı
 const provider = new ethers.JsonRpcProvider(INFURA_API_URL);
 
-// ✅ Başlangıç Değerleri
+// ✅ JSON Dosyası ile Verileri Sakla
+const dataFile = "ico_data.json";
 let totalHolders = 368; // Başlangıç olarak 368 yatırımcı
 let totalRaised = 368995; // Başlangıç olarak 368,995 USDT
-const previousBuyers = new Set(); // Yatırımcıları takip et
+let previousBuyers = new Set();
 
-console.log("📡 Listening for ICO transactions...");
+// **JSON dosyası varsa verileri yükle**
+if (fs.existsSync(dataFile)) {
+  try {
+    const savedData = JSON.parse(fs.readFileSync(dataFile, "utf8"));
+    totalHolders = savedData.totalHolders || 368;
+    totalRaised = savedData.totalRaised || 368995;
+    previousBuyers = new Set(savedData.previousBuyers || []);
+  } catch (error) {
+    console.error(
+      "⚠️ JSON verisi okunurken hata oluştu, varsayılan değerler kullanılacak."
+    );
+  }
+}
 
-// ✅ ICO Smart Contract Event Listener
+console.log("📡 Blockchain işlemleri dinleniyor...");
+
+// ✅ **ICO Smart Contract Dinleyici**
 async function listenICO() {
   const abi = ["event TokensPurchased(address indexed buyer, uint256 amount)"];
 
   try {
     const icoContract = new ethers.Contract(ICO_ADDRESS, abi, provider);
-    console.log("📡 Listening for 'TokensPurchased' events...");
+    console.log("📡 'TokensPurchased' işlemleri dinleniyor...");
 
     icoContract.on("TokensPurchased", async (buyer, amount, event) => {
       const amountInTokens = ethers.formatEther(amount);
+      const txHash = event.transactionHash || "N/A"; // İşlem hash kontrolü
 
-      // 🔹 Transaction Hash doğrulama
-      let txHash = "N/A";
-      if (event && event.transactionHash) {
-        txHash = event.transactionHash;
-      } else if (event.log && event.log.transactionHash) {
-        txHash = event.log.transactionHash;
-      }
-
-      // 🔹 Token fiyatını al
+      // **Token fiyatını al**
       const pricePerToken = await getTokenPrice();
 
-      // 🔹 USDT bazında ödenen toplam tutarı hesapla
-      const totalUsd = (amountInTokens * pricePerToken).toFixed(2);
+      // **USDT bazında toplam fiyat hesapla**
+      const totalUsd = parseFloat((amountInTokens * pricePerToken).toFixed(2));
 
-      // 🔹 Total Raised'ı doğru artır
-      totalRaised = parseFloat(totalRaised) + parseFloat(totalUsd);
+      // **Total Raised artır**
+      totalRaised = parseFloat(totalRaised) + totalUsd;
 
-      // 🔹 Yatırımcıyı kontrol et, yeni yatırımcıysa holders sayısını artır
+      // **Yeni kullanıcı mı kontrol et**
       if (!previousBuyers.has(buyer)) {
         previousBuyers.add(buyer);
         totalHolders += 1;
       }
 
+      // **Verileri JSON dosyasına kaydet**
+      fs.writeFileSync(
+        dataFile,
+        JSON.stringify(
+          {
+            totalHolders,
+            totalRaised,
+            previousBuyers: Array.from(previousBuyers),
+          },
+          null,
+          2
+        )
+      );
+
+      // **Telegram Mesaj Formatı**
       const message = `
 ⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡
 🔥 *NEW PRESALE BUY!* 🔥
 ⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡
 
-💰 *Amount:* ${totalUsd} USDT
-💵 *Total:* $${totalUsd}
+💰 *Amount:* ${totalUsd.toFixed(2)} USDT
+💵 *Total:* $${totalUsd.toFixed(2)}
 📊 *Price Per Token:* $${pricePerToken}
 📈 *Total Raised:* $${totalRaised.toFixed(2)}
 👥 *Total Holders:* ${totalHolders}
 🔗 [View on BscScan](https://bscscan.com/tx/${txHash})
       `;
 
-      console.log("✅ New transaction detected:", message);
+      console.log("✅ Yeni işlem tespit edildi:", message);
 
       sendToTelegram(message);
     });
   } catch (error) {
-    console.error("❌ Error listening to ICO purchases:", error.message);
+    console.error("❌ ICO işlemlerini dinlerken hata oluştu:", error.message);
     process.exit(1);
   }
 }
 
-// ✅ Get Token Price from Current Stage
+// ✅ **Token fiyatını al**
 async function getTokenPrice() {
   try {
     const abi = [
@@ -97,14 +121,14 @@ async function getTokenPrice() {
     ];
     const contract = new ethers.Contract(ICO_ADDRESS, abi, provider);
     const price = await contract.sellTokenInUDSTPrice(ethers.parseEther("1"));
-    return ethers.formatEther(price);
+    return parseFloat(ethers.formatEther(price)).toFixed(2);
   } catch (error) {
-    console.error("⚠️ Error fetching token price:", error.message);
+    console.error("⚠️ Token fiyatı alınırken hata oluştu:", error.message);
     return "N/A";
   }
 }
 
-// ✅ Send Message to Telegram Bot
+// ✅ **Telegram'a mesaj gönder**
 async function sendToTelegram(message) {
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
 
@@ -115,11 +139,11 @@ async function sendToTelegram(message) {
       parse_mode: "Markdown",
     });
 
-    console.log("✅ Notification sent to Telegram!");
+    console.log("✅ Telegram'a mesaj gönderildi!");
   } catch (err) {
-    console.error("❌ Failed to send Telegram message:", err.message);
+    console.error("❌ Telegram mesajı gönderilemedi:", err.message);
   }
 }
 
-// ✅ Start the Bot
+// ✅ **Botu başlat**
 listenICO();
