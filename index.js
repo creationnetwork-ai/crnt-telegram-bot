@@ -7,7 +7,7 @@ const { TwitterApi } = require("twitter-api-v2");
 // ✅ Çevresel değişkenler
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const INFURA_API_URL = process.env.INFURA_API_URL;
+const RPC_URL = process.env.RPC_URL || "https://rpc.ankr.com/bsc";  // Yeni RPC URL
 const ICO_ADDRESS = process.env.ICO_ADDRESS
   ? process.env.ICO_ADDRESS.toLowerCase()
   : null;
@@ -19,28 +19,29 @@ const twitterClient = new TwitterApi({
   appKey: process.env.TWITTER_API_KEY,
   appSecret: process.env.TWITTER_API_SECRET,
   accessToken: process.env.TWITTER_ACCESS_TOKEN,
-  accessSecret: process.env.TWITTER_ACCESS_SECRET,
+  accessSecret: process.env.TWITTER_ACCESS_TOKEN_SECRET,
 });
 
-if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID || !INFURA_API_URL || !ICO_ADDRESS) {
+// ✅ Gerekli env değişkenlerini kontrol et
+if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID || !RPC_URL || !ICO_ADDRESS) {
   console.error("❌ Gerekli çevresel değişkenler eksik. .env dosyanızı kontrol edin.");
   process.exit(1);
 }
 
-// ✅ BSC Sağlayıcı
-const provider = new ethers.JsonRpcProvider(INFURA_API_URL);
+// ✅ BSC Sağlayıcı (JSON-RPC)
+const provider = new ethers.JsonRpcProvider(RPC_URL);
 
 // ✅ JSON Dosyası ile Verileri Sakla
 const dataFile = "ico_data.json";
 let totalHolders = 391;
-let totalRaised = 371371.5900000001;
+let totalRaised = 371371.59;
 
 // **JSON dosyası varsa verileri yükle**
 if (fs.existsSync(dataFile)) {
   try {
     const savedData = JSON.parse(fs.readFileSync(dataFile, "utf8"));
     totalHolders = savedData.totalHolders || 391;
-    totalRaised = savedData.totalRaised || 371371.5900000001;
+    totalRaised = savedData.totalRaised || 371371.59;
   } catch (error) {
     console.error("⚠️ JSON verisi okunurken hata oluştu, varsayılan değerler kullanılacak.");
   }
@@ -54,17 +55,25 @@ async function listenICO() {
 
   try {
     const icoContract = new ethers.Contract(ICO_ADDRESS, abi, provider);
-    console.log("📡 'TokensPurchased' işlemleri dinleniyor...");
+    console.log("📡 'TokensPurchased' işlemleri BSC RPC ile dinleniyor...");
 
     icoContract.on("TokensPurchased", async (buyer, amount, event) => {
-      const amountInTokens = ethers.formatEther(amount);
-      const txHash = event.transactionHash || "N/A"; // İşlem hash kontrolü
+      console.log("✅ Event Log:", event);
+
+      // **Düzgün bir işlem hash olup olmadığını kontrol et**
+      const txHash = event.transactionHash ? event.transactionHash : event.log?.transactionHash;
+      const bscscan_link = txHash ? `https://bscscan.com/tx/${txHash}` : "https://bscscan.com";
+
+      if (!txHash) {
+        console.error("⚠️ İşlem hash bulunamadı, işlem geçersiz olabilir.");
+        return;
+      }
 
       // **Token fiyatını al**
       const pricePerToken = await getTokenPrice();
 
       // **USDT bazında toplam fiyat hesapla**
-      const totalUsd = parseFloat((amountInTokens * pricePerToken).toFixed(2));
+      const totalUsd = parseFloat((ethers.formatEther(amount) * pricePerToken).toFixed(2));
 
       // **Total Raised artır**
       totalRaised += totalUsd;
@@ -87,24 +96,22 @@ async function listenICO() {
 
       // **Gönderilecek Mesaj**
       const message = `
-⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡
-🔥 *NEW PRESALE BUY!* 🔥
-⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡⚡
-
-💰 *Amount:* ${totalUsd.toFixed(2)} USDT
-💵 *Total:* $${totalUsd.toFixed(2)}
-📊 *Price Per Token:* $${pricePerToken}
-📈 *Total Raised:* $${totalRaised.toFixed(2)}
-👥 *Total Holders:* ${totalHolders} 
-🔗 [View on BscScan](https://bscscan.com/tx/${txHash})
-
-💎 *[Buy Creationnetwork ($CRNT)](${ICO_SALE_LINK})*
+🚀 *NEW ICO PURCHASE!*  
+💰 *Amount:* ${totalUsd.toFixed(2)} USDT  
+💵 *Total Raised:* $${totalRaised.toFixed(2)}  
+📈 *Price Per Token:* $${pricePerToken}  
+👥 *Total Holders:* ${totalHolders}  
+🔗 [View on BscScan](${bscscan_link})  
+💎 *[Buy CRNT Now](${ICO_SALE_LINK})*
       `;
 
       console.log("✅ Yeni işlem tespit edildi:", message);
 
+      // Telegram'a video ve mesaj gönder
       await sendVideoToTelegram(message);
-      await sendVideoToTwitter(message);
+
+      // Twitter'a mesaj gönder
+      await sendTweet(message);
     });
   } catch (error) {
     console.error("❌ ICO işlemlerini dinlerken hata oluştu:", error.message);
@@ -136,32 +143,19 @@ async function sendVideoToTelegram(message) {
       caption: message,
       parse_mode: "Markdown",
     });
-
     console.log("✅ Telegram'a video ile mesaj gönderildi!");
   } catch (err) {
     console.error("❌ Telegram mesajı gönderilemedi:", err.message);
   }
 }
 
-// ✅ **Twitter'a video ile mesaj gönder**
-async function sendVideoToTwitter(message) {
+// ✅ **Twitter'a mesaj gönder**
+async function sendTweet(message) {
   try {
-    console.log("📤 Twitter'a video yükleniyor...");
-
-    // ✅ 1. Videoyu yükle
-    const mediaId = await twitterClient.v1.uploadMedia(VIDEO_URL, { type: "video/mp4" });
-
-    console.log("✅ Video yüklendi! Media ID:", mediaId);
-
-    // ✅ 2. Tweeti gönder
-    await twitterClient.v2.tweet({
-      text: message,
-      media: { media_ids: [mediaId] },
-    });
-
-    console.log("✅ Twitter'a video ile mesaj gönderildi!");
-  } catch (err) {
-    console.error("❌ Twitter mesajı gönderilemedi:", err.message);
+    await twitterClient.v2.tweet(message);
+    console.log("✅ Twitter mesajı başarıyla gönderildi!");
+  } catch (error) {
+    console.error("❌ Twitter mesajı gönderilemedi:", error.message);
   }
 }
 
